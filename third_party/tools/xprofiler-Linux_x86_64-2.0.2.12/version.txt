@@ -1,0 +1,5 @@
+xprofiler
+version: 2.0.2.12
+commit id: c98b0a5
+date: 2026-08-06-08-48-51
+compiler: gcc 7.5.0
