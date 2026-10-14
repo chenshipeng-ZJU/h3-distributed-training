@@ -1,0 +1,142 @@
+# =============================================================================
+# Config for MiniMax-H3 SFT 16 卡单节点 P800 训练 (DiffSynth-Studio)
+# 1 台 P800 × 16 卡 ZeRO-3 并行（原 4 节点配置，已改为单节点）
+# launch: bash scripts/stage2_train_4node.sh
+# =============================================================================
+
+recipe: h3_sft
+
+# 配置训练项目的路径
+project: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT
+
+# ---- Accelerate / DeepSpeed 配置 ----
+accelerate:
+  compute_environment: LOCAL_MACHINE
+  debug: false
+  distributed_type: DEEPSPEED
+  downcast_bf16: 'no'
+  enable_cpu_affinity: false
+  machine_rank: 0                   # 运行时由脚本动态设置
+  main_training_function: main
+  mixed_precision: bf16
+  num_machines: 1                   # 单节点
+  num_processes: 16                # 16 卡 P800，总 16 卡
+  rdzv_backend: c10d
+  same_network: true
+  tpu_env: []
+  tpu_use_cluster: false
+  tpu_use_sudo: false
+  use_cpu: false
+  deepspeed_config:
+    gradient_accumulation_steps: 1
+    gradient_clipping: 1.0
+    offload_optimizer_device: none    # none / cpu
+    offload_param_device: none        # none / cpu
+    zero3_init_flag: true
+    zero3_save_16bit_model: true
+    zero_stage: 3                     # 0 / 1 / 2 / 3
+
+# ---- Training Pipeline Arguments ----
+trainer:
+  dtype: bf16
+  seed: 42
+  task: sft:train                     # sft:data_process / sft / sft:train
+  num_epochs: 100
+  save_steps: 500                     # 不生效 ，实际epoch才44个step，每个epoch保存
+  gradient_accumulation_steps: 1
+  log_every_n_steps: 1
+  output_dir: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT/output/pet/models
+  log_dir: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT/logs
+  # ---- 断点续训 ----
+  resume_train: false
+  resume_ckpt_dir: null
+  remove_prefix_in_ckpt: pipe.dit.
+  # CFG-aware training（>1 启用 inverse-CFG）
+  training_cfg_scale: 1.0
+  audio_loss_weight: 1.0
+  initialize_model_on_cpu: true       # 模型先加载到 CPU，再由 ZeRO-3 分片
+  find_unused_parameters: true
+  # ---- EMA ----
+  ema_decay: 0.99                    # EMA 衰减率，0=禁用
+  ema_cpu_offload: false             # 4节点：显存充足，EMA 留 GPU
+
+# ---- Model Arguments ----
+model:
+  model_id: MiniMax/MiniMax-H3
+  train_variant: FL2VA
+  model_paths: null
+  trainable_models: dit
+  use_gradient_checkpointing: true
+  use_gradient_checkpointing_offload: true
+  share_dir: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/share/MiniMax-H3
+  skip_download: true
+
+# ---- Dataset Arguments ----
+dataset:
+  base_path: /
+  metadata_path: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT/data/train/metadata.csv
+  data_file_keys: video,input_audio
+  extra_inputs: input_audio,input_image
+  repeat_stage1: 1
+  repeat_stage2: 1
+  num_workers: 0
+  height: 1280
+  width: 704
+  num_frames: 90
+  max_pixels: 1048576
+  silent_on_missing_audio: true
+  cache_dir: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT/data/processed
+  val_steps: 50                     # 每 N 步算一次 val loss（null=禁用）
+  split_ratio: 0.9                  # train/val 分割比例（0.9=9:1）
+  val_num: 64                       # 全局 val 样本总数（16 卡场景）
+
+# ---- Val Dataset Arguments ----
+dataset_val:
+  enabled: false
+  dataset_file: null
+  sampling_steps: [50]
+  guidance_scale: 1.0
+  num_videos_per_prompt: 1
+  num_frames: 124
+  use_validation_media_conditioning: false
+  offload_training_state: true
+  text_encoder_cpu_offload: true
+  vae_cpu_offload: true
+  # ---- Val 视频生成（4节点显存充足，训练时生成 val 视频用于监控）----
+  val_generate:
+    enabled: true
+    metadata: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT/data/train/metadata_val.csv
+    num: 64                       # 每次生成视频数量
+    steps: 50                     # 每 N 步生成一次（与 val_steps 一致）
+    height: 1280                  # 与训练一致
+    width: 704
+    num_frames: 90
+    inference_steps: 50           # 去噪步数
+    seed: 42
+
+# ---- Optimizer Arguments ----
+optimizer:
+  learning_rate: 1e-5
+  weight_decay: 0.01
+  customized_optimizer: null
+  enable_model_cpu_offload: false
+  enable_optimizer_cpu_offload: false
+  cpu_offload_split_threshold: null
+
+# ---- Scheduler Arguments ----
+scheduler:
+  lr_scheduler: constant
+  lr_warmup_steps: 0
+
+# ---- Logger Arguments ----
+logger:
+  enable_tensorboard_log: false
+  enable_wandb_log: false
+  wandb_project: DiffSynth-Studio
+  enable_swanlab_log: false
+  swanlab_project: DiffSynth-Studio
+  enable_csv_log: true
+
+# ---- Processor ----
+processor:
+  path: null

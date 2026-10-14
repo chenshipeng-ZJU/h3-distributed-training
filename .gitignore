@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据 / 训练产物 / 日志 / 性能 dump（体积大且含本地环境信息）
+SFT/data/
+SFT/output/
+SFT/logs/
+SFT/tune/
+
+# 模型权重与二进制
+*.safetensors
+*.pth
+*.ckpt
+*.so
+*.so.*
+*.whl
+*.kunlun
+
+# 第三方：上游 DiffSynth-Studio 为公开仓库，按 README 克隆；厂商工具不随库分发
+third_party/
+
+# 本机私有配置备份（含训练机真实路径，勿入库勿删除）
+.local-private-backup/

@@ -1,0 +1,171 @@
+# =============================================================================
+# Config for MiniMax-H3 SFT train (DiffSynth-Studio)
+# launch train: bash scripts/03_train.sh
+# launch data process: bash scripts/02_data_process.sh
+# =============================================================================
+
+recipe: h3_sft
+
+# 配置训练项目的路径（训练机本地 SSD，见 精度测试/H3/env.sh 的 PROJECT_DIR）
+project: /data/h3-distributed-training/SFT
+
+# ---- Accelerate / FSDP2 配置 ----
+# 使用 block 级 FSDP2 fully_shard，避免回退到 FSDP1。
+accelerate:
+  compute_environment: LOCAL_MACHINE
+  debug: false
+  distributed_type: FSDP
+  downcast_bf16: 'no'
+  enable_cpu_affinity: false
+  fsdp_config:
+    fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+    fsdp_cpu_ram_efficient_loading: false
+    fsdp_offload_params: false
+    fsdp_reshard_after_forward: true   # 不会让多个 block 的完整参数长期驻留在显存中。fsdp_reshard_after_forward: true 是这里降低峰值的关键。
+    fsdp_state_dict_type: SHARDED_STATE_DICT
+    fsdp_transformer_layer_cls_to_wrap: MiniMaxH3DiTBlock
+    fsdp_version: 2
+  machine_rank: 0
+  main_training_function: main
+  mixed_precision: bf16
+  num_machines: 1
+  num_processes: 8                  
+  rdzv_backend: static
+  same_network: true
+  tpu_env: []
+  tpu_use_cluster: false
+  tpu_use_sudo: false
+  use_cpu: false
+
+# ---- Training Pipeline Arguments ----
+trainer:
+  dtype: bf16
+  seed: 42
+  task: sft:train                     # sft:data_process / sft / sft:train
+  num_epochs: 10000                   # 1600 样本 / 16 卡 = 每卡每 epoch 100 步，总计 100 万步
+                                     # 22 帧预计 ~10s/step 量级（124 帧实测 ~44s 线性折算）；
+                                     # 实际按 loss 收敛情况提前停即可
+  save_steps: 500                     # 每 500 步存 checkpoint（LoRA 小文件；此前临时设 1
+                                     # 验证存盘链路，已验证通过改回）
+  gradient_accumulation_steps: 1
+  log_every_n_steps: 1
+  output_dir: /data/h3-distributed-training/SFT/output/official_lora/models
+  log_dir: /data/h3-distributed-training/SFT/logs
+  # ---- 断点续训 ----
+  # 使用方式：
+  #   1. 首次训练：resume_train: false
+  #   2. 中断后恢复：resume_train: true，resume_ckpt_dir 填上次的 checkpoint 路径
+  #   3. 命令行覆盖：bash scripts/stage2_train.sh --resume /path/to/step-500.safetensors
+  resume_train: false                 # 全新复现官方实验，从头训练
+  resume_ckpt_dir: null               # null 自动找最新 step-N.safetensors；或手动指定路径
+  # 注意：output_dir 已指向 output/official_lora/models，resume 路径为 ${trainer.output_dir}/step-N.safetensors
+  remove_prefix_in_ckpt: pipe.dit.
+  # CFG-aware training（>1 启用 inverse-CFG）
+  training_cfg_scale: 1.0
+  audio_loss_weight: 1.0             # 音频 loss 权重（1=等权，0=只训视频）
+  initialize_model_on_cpu: true       # 模型先加载到 CPU，再由 FSDP 分片
+  find_unused_parameters: true
+  # ---- EMA ----
+  ema_decay: 0                       # stage1 数据处理不需要 EMA
+  ema_cpu_offload: false
+
+# ---- Model Arguments ----
+model:
+  model_id: MiniMax/MiniMax-H3        # ModelScope 模型 ID
+  train_variant: FL2VA                # FL2VA 或 Ref2VA
+  model_paths: null                   # 本地路径（优先于 model_id）
+  trainable_models: null              # 官方 LoRA 复现: 不传（冻结全部，仅 LoRA 层可训练）
+  use_gradient_checkpointing: true    # 与 selective_fa 组合使用
+  use_gradient_checkpointing_offload: false  # 强制关闭 CPU offload，避免每层 checkpoint 产生阻塞 D2H
+  # 最快组合：XBLAS cache + Flash Attention selective checkpointing
+  gradient_checkpointing_skip_blocks: ""
+  # regular=普通重算；selective_fa=按 aten Attention 算子保存输出
+  gradient_checkpointing_mode: selective_fa
+  # 原始模型权重（训练机本地路径，见 精度测试/H3/env.sh 的 MODEL_DIR）
+  share_dir: /data/models/MiniMax-H3
+  skip_download: true
+  # === LoRA config（官方复现: MiniMax-H3-FL2VA.sh）===
+  lora_base_model: dit
+  lora_target_modules: attn.qkv_proj,attn.out_proj,mlp.fc1,mlp.fc2
+  lora_rank: 32
+  lora_checkpoint: null
+  preset_lora_path: null
+  preset_lora_model: null
+  # === 模板模型（Text Embeddings 训练用）===
+  # template_model_id_or_path: null
+  # === 量化 ===
+  # fp8_models: null
+  # quant_options: null
+  # offload_models: null
+
+# ---- Dataset Arguments ----
+dataset:
+  # 官方复现数据集: DiffSynth-Studio/diffsynth_example_dataset（ModelScope）
+  # 使用训练机本地副本（见 精度测试/H3/env.sh 的 DATASET_DIR）；
+  # stage1_data_process.sh 检测不到 metadata 时会自动下载到 base_path
+  base_path: /data/datasets/diffsynth_example_dataset/minimax_h3/MiniMax-H3-FL2VA
+  metadata_path: /data/datasets/diffsynth_example_dataset/minimax_h3/MiniMax-H3-FL2VA/metadata.csv
+  data_file_keys: video,input_audio
+  extra_inputs: input_audio,input_image,end_image  # 官方 FL2VA: input_audio,input_image,end_image
+  repeat_stage1: 1                    # 官方复现: stage1 1 遍
+  repeat_stage2: 1                    # 样本已物理复制到 1600 份（见 duplicate_to_total），无需 repeat
+  # 样本复制扩充：官方数据集仅 1 个视频，stage1 完成后自动复制到 1600 份
+  # （16 卡 × 每卡 100 样本/epoch）；用硬链接实现，不占额外磁盘。null=关闭
+  duplicate_to_total: 1600
+  num_workers: 0
+  # 视频尺寸（官方复现: 480x832, 124 帧）
+  height: 480
+  width: 832
+  num_frames: 124                     # 17n+5 ✓（124=17×7+5），与同事实验同步。
+                                     # 此前的 fc_fusion OOM 根因已修复（XMLIR_USE_HYDRA_LINEAR=0
+                                     # + runner.py FSDP 分支不搬模型上卡），124 帧可跑；
+                                     # 注意缓存必须按帧数重新生成
+  max_pixels: 1048576
+  # 音频（官方数据集自带音轨，无需静音兜底）
+  silent_on_missing_audio: false
+  # 缓存（与 pet 数据的 processed 目录分开，尺寸不同不可混用）
+  cache_dir: /data/h3-distributed-training/SFT/data/processed_official
+  val_steps: null                     # 官方无 val loss（框架也不支持 --val_steps）
+  split_ratio: 0.9
+  val_num: 0                          # 0=split 时全量进 train（官方全量训练）
+
+# ---- Val Dataset Arguments ----
+dataset_val:
+  enabled: false
+  dataset_file: null                  # 验证集 json
+  sampling_steps: [50]
+  guidance_scale: 1.0
+  num_videos_per_prompt: 1
+  num_frames: 124
+  use_validation_media_conditioning: false
+  offload_training_state: true
+  text_encoder_cpu_offload: true
+  vae_cpu_offload: true
+
+# ---- Optimizer Arguments ----
+optimizer:
+  learning_rate: 1e-4                 # 官方复现: LoRA lr 1e-4
+  weight_decay: 0.01
+  customized_optimizer: null         # 例: bitsandbytes.optim.Adam8bit。默认优化器 AdamW BF16
+  # CPU offload 训练
+  enable_model_cpu_offload: true   # stage1 数据处理：模型按需加载 GPU，避免 73G 模型常驻导致 OOM
+  enable_optimizer_cpu_offload: false  # 不用 DiffSynth 的 offload（和 DeepSpeed 冲突）
+  cpu_offload_split_threshold: null
+
+# ---- Scheduler Arguments ----
+scheduler:
+  lr_scheduler: constant             # constant / cosine / linear
+  lr_warmup_steps: 0
+
+# ---- Logger Arguments ----
+logger:
+  enable_tensorboard_log: true        # TensorBoard: loss + grad_norm，目录 output/official_lora/models/tensorboard_log
+  enable_wandb_log: false
+  wandb_project: DiffSynth-Studio
+  enable_swanlab_log: false
+  swanlab_project: DiffSynth-Studio
+  enable_csv_log: false                # loss 全走 TensorBoard，不再写 loss.csv
+
+# ---- Processor ----
+processor:
+  path: null                         # Ref2VA 需指定: MiniMax/MiniMax-H3:Ref2VA/processor/

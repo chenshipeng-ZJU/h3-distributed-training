@@ -1,0 +1,59 @@
+# =============================================================================
+# Config for MiniMax-H3 推理 (原始模型 / SFT 模型)
+# launch stage0: bash scripts/stage0_infer_original.sh configs/infer/infer_1node.yaml
+# launch stage3: bash scripts/stage3_infer_sft.sh configs/infer/infer_1node.yaml
+# =============================================================================
+
+recipe: h3_infer
+
+# 配置项目路径
+project: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/csp/H3/SFT
+
+# ---- GPU 数量 ----
+num_processes: 8
+
+# ---- Model Arguments ----
+model:
+  model_id: MiniMax/MiniMax-H3        # ModelScope 模型 ID
+  train_variant: FL2VA                # FL2VA 或 Ref2VA
+  share_dir: /data/vjuicefs_ai_hz_model_wl/public_data/kunlun/share/MiniMax-H3
+  skip_download: true
+
+# ---- Inference Arguments ----
+inference:
+  # ---- Prompt 配置 ----
+  # 方式1: 单条 prompt（可被 --prompt 命令行覆盖）
+  prompt: "一只可爱的小狗在草地上欢快地奔跑，尾巴摇摆，表情兴奋而活泼，阳光明媚，绿草如茵"
+  # 方式2: 从文件批量读取（每行一个 JSON：{input_image, prompt, output_name, negative_prompt}）
+  # 用 python scripts/convert_pet_dataset.py --mode infer 生成
+  prompt_file: ${project}/data/infer/prompts.txt
+
+  # ---- 视频参数 ----
+  height: 1280
+  width: 704
+  num_frames: 90                     # 必须满足 17n+5（如 39/56/124）
+  num_inference_steps: 50            # 去噪步数
+  seed: 0                            # 随机种子
+  fps: 24                           # 输出视频帧率
+
+  # ---- 输出目录 ----
+  # 实际输出到子目录，命名格式：raw_H3_infer_{steps}step_{width}p_{frames}frame
+  # stage3 自动改为 sft_H3_infer_{steps}step_{width}p_{frames}frame
+  output_dir: ${project}/output/pet/inference
+
+  # ---- VRAM 策略 ----
+  # 模型 135GB > 单卡 96GB，必须 CPU offload
+  # 大模型(text_encoder/transformer)存 CPU，计算时搬 GPU
+  # 小模型(vae)直接留 GPU
+  offload_device: cpu               # cpu / cuda
+  onload_device: cpu                # cpu / cuda
+  computation_device: cuda          # cpu / cuda
+  offload_dtype: bf16               # bf16 / fp32
+  onload_dtype: bf16
+  computation_dtype: bf16
+  preparing_dtype: bf16
+  preparing_device: cuda
+
+  # ---- SFT checkpoint（Stage 3 用）----
+  # null = 自动找最新 checkpoint；或指定具体路径
+  sft_ckpt: null                    # 例: ${project}/output/pet/models/step-500.safetensors
